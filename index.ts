@@ -7,22 +7,23 @@ type Env = {
   AN_KV: KVNamespace;
 };
 
+const VERSION = "v2";
+
+/** ✅ Step 3: CORS allowlist */
 const ALLOWED_ORIGINS = new Set([
   "https://adsnord.com",
   "https://www.adsnord.com",
 ]);
 
-const VERSION = "v2";
+/** ✅ Step 4: Rate limiting (anti-abuse) */
+const RL_WINDOW_SEC = 600; // 10 minutes
+const RL_MAX_REQ = 80;     // per IP per window (free tool safe)
 
-// Rate limit settings
-const RL_WINDOW_SEC = 600; // 10 min
-const RL_MAX_REQ = 40; // per IP per window (adjust as you want)
-
-// Cache settings
-const CACHE_TTL_SEC = 900; // 15 min
+/** ✅ Step 7: Optional cache */
 const CACHE_ENABLED = true;
+const CACHE_TTL_SEC = 900; // 15 minutes
 
-function getOrigin(req: Request) {
+function getOrigin(req: Request): string {
   return req.headers.get("Origin") || "";
 }
 
@@ -30,7 +31,7 @@ function corsHeaders(origin: string) {
   const allowOrigin = ALLOWED_ORIGINS.has(origin) ? origin : "";
   return {
     "Content-Type": "application/json; charset=utf-8",
-    "Access-Control-Allow-Origin": allowOrigin, // empty -> browser will block
+    "Access-Control-Allow-Origin": allowOrigin, // empty => browser blocks
     "Access-Control-Allow-Methods": "GET,OPTIONS",
     "Access-Control-Allow-Headers": "Content-Type",
     "Vary": "Origin",
@@ -38,7 +39,7 @@ function corsHeaders(origin: string) {
   };
 }
 
-function json(req: Request, data: unknown, status = 200) {
+function json(req: Request, data: unknown, status = 200): Response {
   const origin = getOrigin(req);
   return new Response(JSON.stringify(data), {
     status,
@@ -46,7 +47,8 @@ function json(req: Request, data: unknown, status = 200) {
   });
 }
 
-function error(req: Request, status: number, code: string, message: string) {
+/** ✅ Step 6: Standard error format */
+function error(req: Request, status: number, code: string, message: string): Response {
   return json(req, { status: "error", code, message, version: VERSION }, status);
 }
 
@@ -128,18 +130,18 @@ function buildKeywords(keyword: string, business: string, goal: string) {
   return results;
 }
 
+/** Cloudflare client IP */
 function ipFromRequest(req: Request): string {
-  // Cloudflare provides this header
   return req.headers.get("CF-Connecting-IP") || "0.0.0.0";
 }
 
-async function rateLimit(env: Env, key: string): Promise<{ ok: boolean; retryAfterSec?: number }> {
-  // KV-based fixed window
+/** ✅ Step 4: KV rate limit (fixed window) */
+async function rateLimit(env: Env, ip: string): Promise<{ ok: boolean; retryAfterSec?: number }> {
   const now = Date.now();
   const windowId = Math.floor(now / (RL_WINDOW_SEC * 1000));
-  const rlKey = `rl:${key}:${windowId}`;
+  const key = `rl:${ip}:${windowId}`;
 
-  const raw = await env.AN_KV.get(rlKey);
+  const raw = await env.AN_KV.get(key);
   const count = raw ? parseInt(raw, 10) : 0;
 
   if (count >= RL_MAX_REQ) {
@@ -148,16 +150,13 @@ async function rateLimit(env: Env, key: string): Promise<{ ok: boolean; retryAft
     return { ok: false, retryAfterSec };
   }
 
-  const newCount = count + 1;
-
-  // keep key until window ends
   const ttl = RL_WINDOW_SEC + 5;
-  await env.AN_KV.put(rlKey, String(newCount), { expirationTtl: ttl });
-
+  await env.AN_KV.put(key, String(count + 1), { expirationTtl: ttl });
   return { ok: true };
 }
 
-function validateInputs(keyword: string, business: string, goal: string): { ok: boolean; code?: string; message?: string } {
+/** ✅ Step 5: Strict validation */
+function validateInputs(keyword: string, business: string, goal: string) {
   if (!keyword || !business || !goal) {
     return { ok: false, code: "MISSING_INPUT", message: "Missing required inputs: keyword, business, goal." };
   }
@@ -172,15 +171,16 @@ function validateInputs(keyword: string, business: string, goal: string): { ok: 
     return { ok: false, code: "BAD_GOAL", message: "Goal value is invalid." };
   }
 
-  // simple abuse patterns
+  // block obvious abuse patterns
   const bad = /(https?:\/\/|<script|<\/script|data:|javascript:)/i;
   if (bad.test(keyword) || bad.test(business) || bad.test(goal)) {
     return { ok: false, code: "BLOCKED_INPUT", message: "Blocked input pattern detected." };
   }
 
-  return { ok: true };
+  return { ok: true as const };
 }
 
+/** ✅ Step 7: Cache key */
 function cacheKey(keyword: string, business: string, goal: string) {
   const k = clean(keyword, 80).toLowerCase();
   const b = clean(business, 50).toLowerCase();
@@ -193,30 +193,28 @@ export default {
     const url = new URL(request.url);
     const origin = getOrigin(request);
 
-    // ✅ CORS preflight (only allow adsnord.com origins)
+    /** ✅ Step 3: Handle OPTIONS preflight (CORS) */
     if (request.method === "OPTIONS") {
-      if (!ALLOWED_ORIGINS.has(origin)) {
-        return new Response(null, { status: 403 });
-      }
+      if (!ALLOWED_ORIGINS.has(origin)) return new Response(null, { status: 403 });
       return new Response(null, { status: 204, headers: corsHeaders(origin) });
     }
 
-    // ✅ Only allow GET for this endpoint
+    /** Only allow GET */
     if (request.method !== "GET") {
       return error(request, 405, "METHOD_NOT_ALLOWED", "Only GET is allowed.");
     }
 
-    // ✅ CORS allowlist enforcement
+    /** ✅ Step 3: Block non-allowed origins */
     if (!ALLOWED_ORIGINS.has(origin)) {
       return error(request, 403, "CORS_BLOCKED", "Origin not allowed.");
     }
 
-    // ✅ Route
+    /** Route check */
     if (!url.pathname.includes("/keyword-analyzer")) {
       return new Response("AdsNord Hub is Ready. Use /keyword-analyzer", { status: 200 });
     }
 
-    // ✅ Rate limit (per IP)
+    /** ✅ Step 4: Rate limit */
     const ip = ipFromRequest(request);
     const rl = await rateLimit(env, ip);
     if (!rl.ok) {
@@ -225,27 +223,27 @@ export default {
       return res;
     }
 
-    // ✅ Inputs
+    /** Inputs */
     const keyword = clean(url.searchParams.get("keyword") || "", 80);
     const business = clean(url.searchParams.get("business") || "", 50);
     const goal = clean(url.searchParams.get("goal") || "", 40);
 
+    /** ✅ Step 5: Validation */
     const v = validateInputs(keyword, business, goal);
     if (!v.ok) {
       return error(request, 400, v.code || "BAD_REQUEST", v.message || "Invalid inputs.");
     }
 
-    // ✅ Optional cache
+    /** ✅ Step 7: Cache */
     const ck = cacheKey(keyword, business, goal);
     if (CACHE_ENABLED) {
       const cached = await env.AN_KV.get(ck);
       if (cached) {
-        // cached already contains full payload
         return json(request, JSON.parse(cached), 200);
       }
     }
 
-    // ✅ Compute
+    /** Compute */
     const results = buildKeywords(keyword, business, goal);
     const best_pick = results[0]?.keyword || "";
     const copy_block = results.map(r => r.keyword).join("\n");
