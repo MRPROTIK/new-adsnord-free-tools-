@@ -113,10 +113,16 @@ export default {
 
       const results = buildKeywords(keyword, business, goal);
 
+      // ✅ UI-friendly extras (won't break v2)
+      const best_pick = results[0]?.keyword || "";
+      const copy_block = results.map(r => r.keyword).join("\n");
+
       return json({
         status: "success",
         version: "v2",
-        results
+        results,
+        best_pick,
+        copy_block
       });
     }
 
