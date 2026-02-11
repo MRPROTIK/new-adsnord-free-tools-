@@ -34,8 +34,9 @@ function titleCase(s: string) {
 
 function intentFromKeyword(k: string): Intent {
   const kw = k.toLowerCase();
-  if (/(buy|price|cost|hire|book|quote|deal|near me|service|agency|order)/.test(kw))
+  if (/(buy|price|cost|hire|book|quote|deal|near me|service|agency|order)/.test(kw)) {
     return "Transactional";
+  }
   if (/(best|top|compare|review|vs|pricing)/.test(kw)) return "Commercial";
   if (/(how to|what is|guide|tutorial|ideas)/.test(kw)) return "Informational";
   return "Commercial";
@@ -112,7 +113,7 @@ function buildKeywords(keyword: string, business: string, goal: string) {
     `best ${base} ${b} to get ${g}`.trim(),
   ];
 
-  // De-dup + ensure 5
+  // De-dup + ensure exactly 5
   const uniq = Array.from(new Set([...short, ...long])).slice(0, 5);
   while (uniq.length < 5) uniq.push(`${base} ${b} ${g}`.trim());
 
@@ -178,14 +179,14 @@ export default {
       // ✅ UI-compatible response
       return json({
         status: "success",
-        version: "v2", // proof marker
+        version: "v2",
         best_pick,
         copy_block,
         results,
       });
     }
 
-    // default
+    // default root response
     return new Response("AdsNord Hub is Ready. Use /keyword-analyzer", {
       headers: { "Content-Type": "text/plain; charset=utf-8" },
     });
