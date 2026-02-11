@@ -1,0 +1,6 @@
+{
+  "name": "adsnord-tools-hub",
+  "devDependencies": {
+    "wrangler": "^3.0.0"
+  }
+}
