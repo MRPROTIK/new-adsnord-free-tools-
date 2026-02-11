@@ -1,17 +1,16 @@
-type Level = "High" | "Medium" | "Low";
-type Intent = "Informational" | "Commercial" | "Transactional";
-type Funnel = "TOFU" | "MOFU" | "BOFU";
-type KWType = "short_tail" | "long_tail";
+export interface Env {
+  OPENAI_API_KEY: string;
+}
 
 function json(data: unknown, status = 200) {
   return new Response(JSON.stringify(data), {
     status,
     headers: {
-      "Content-Type": "application/json; charset=utf-8",
-      "Access-Control-Allow-Origin": "*",
-      "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
-      "Access-Control-Allow-Headers": "Content-Type",
-      "Cache-Control": "no-store"
+      "content-type": "application/json; charset=utf-8",
+      "access-control-allow-origin": "*",
+      "access-control-allow-methods": "GET,POST,OPTIONS",
+      "access-control-allow-headers": "content-type",
+      "cache-control": "no-store"
     }
   });
 }
@@ -24,151 +23,119 @@ function clean(s: string, max = 120) {
     .slice(0, max);
 }
 
-function titleCase(s: string) {
-  return s
-    .split(" ")
-    .filter(Boolean)
-    .map(w => w.charAt(0).toUpperCase() + w.slice(1))
-    .join(" ");
+async function callOpenAI(env: Env, keyword: string, business: string, goal: string) {
+  const prompt = `
+You are an expert Google Ads strategist.
+
+Input:
+- Mother keyword: "${keyword}"
+- Business type: "${business}"
+- Goal: "${goal}"
+
+Return STRICT JSON only in this exact schema:
+
+{
+  "best_pick": "<one of the 5 keywords>",
+  "copy_block": "Short-tail:\\n1) ...\\n2) ...\\n3) ...\\n\\nLong-tail:\\n1) ...\\n2) ...",
+  "results": [
+    {
+      "keyword": "",
+      "type": "short_tail",
+      "intent_type": "Informational|Commercial|Transactional",
+      "funnel_stage": "TOFU|MOFU|BOFU",
+      "volume_level": "High|Medium|Low",
+      "competition_level": "High|Medium|Low",
+      "reason": ""
+    }
+  ]
 }
 
-function intentFromKeyword(k: string): Intent {
-  const kw = k.toLowerCase();
-  if (/(buy|price|cost|hire|book|quote|deal|near me|service|agency|order)/.test(kw)) return "Transactional";
-  if (/(best|top|compare|review|vs|pricing)/.test(kw)) return "Commercial";
-  if (/(how to|what is|guide|tutorial|ideas)/.test(kw)) return "Informational";
-  return "Commercial";
-}
+Rules:
+- results MUST contain exactly 5 items: 3 short_tail + 2 long_tail
+- No extra keys, no markdown, JSON only
+- Make keywords realistic and ad-ready
+`.trim();
 
-function funnelFromIntent(intent: Intent): Funnel {
-  if (intent === "Informational") return "TOFU";
-  if (intent === "Commercial") return "MOFU";
-  return "BOFU";
-}
-
-function levelByLength(k: string): { volume: Level; competition: Level } {
-  const words = k.trim().split(/\s+/).filter(Boolean).length;
-  // shorter = higher volume & competition (heuristic)
-  if (words <= 2) return { volume: "High", competition: "High" };
-  if (words === 3) return { volume: "Medium", competition: "High" };
-  if (words === 4) return { volume: "Medium", competition: "Medium" };
-  return { volume: "Low", competition: "Low" };
-}
-
-function reasonFor(k: string, business: string, goal: string, intent: Intent): string {
-  const g = goal.toLowerCase();
-  const b = business.toLowerCase();
-
-  const goalHint =
-    g.includes("call") ? "Strong call intent for high-conversion traffic." :
-    g.includes("lead") ? "Good lead-gen intent with clear service demand." :
-    g.includes("sale") ? "Purchase-driven phrasing supports sales-focused campaigns." :
-    g.includes("awareness") ? "Broad discovery intent works well for awareness." :
-    g.includes("retarget") ? "Good for warm audiences and follow-up messaging." :
-    "Balanced goal alignment for testing.";
-
-  const bizHint =
-    b.includes("local") ? "Add location modifiers (city/area) for better relevance." :
-    b.includes("ecom") ? "Works best with product/category landing pages." :
-    b.includes("saas") ? "Pair with feature + benefit ad angles." :
-    b.includes("agency") ? "Use in service page + proof-driven ads." :
-    "Align landing page headline to the keyword.";
-
-  const intentHint =
-    intent === "Transactional" ? "High buying intent." :
-    intent === "Commercial" ? "Comparison/decision intent." :
-    "Research intent—use as top-funnel content or softer offers.";
-
-  return `${intentHint} ${goalHint} ${bizHint}`;
-}
-
-function buildKeywords(keyword: string, business: string, goal: string) {
-  const base = clean(keyword, 80);
-  const b = clean(business, 40);
-  const g = clean(goal, 30);
-
-  // 3 short-tail
-  const short = [
-    `${base} ${b}`.trim(),
-    `${base} ${g}`.trim(),
-    `${base} service`.trim()
-  ];
-
-  // 2 long-tail
-  const long = [
-    `hire ${base} ${b} for ${g}`.trim(),
-    `best ${base} ${b} to get ${g}`.trim()
-  ];
-
-  // de-dup
-  const uniq = Array.from(new Set([...short, ...long])).slice(0, 5);
-
-  // ensure exactly 5 by padding
-  while (uniq.length < 5) uniq.push(`${base} ${b} ${g}`.trim());
-
-  const results = uniq.map((k, idx) => {
-    const type: KWType = idx < 3 ? "short_tail" : "long_tail";
-    const intent = intentFromKeyword(k);
-    const funnel = funnelFromIntent(intent);
-    const levels = levelByLength(k);
-    return {
-      keyword: titleCase(k),
-      type,
-      intent_type: intent,
-      funnel_stage: funnel,
-      volume_level: levels.volume,
-      competition_level: levels.competition,
-      reason: reasonFor(k, business, goal, intent)
-    };
+  const r = await fetch("https://api.openai.com/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "authorization": `Bearer ${env.OPENAI_API_KEY}`,
+      "content-type": "application/json"
+    },
+    body: JSON.stringify({
+      model: "gpt-4.1-mini",
+      temperature: 0.4,
+      messages: [
+        { role: "system", content: "You output only valid JSON. No markdown." },
+        { role: "user", content: prompt }
+      ]
+    })
   });
 
-  // best_pick: first BOFU if exists, else first
-  const best = results.find(r => r.funnel_stage === "BOFU")?.keyword || results[0].keyword;
+  if (!r.ok) {
+    const t = await r.text();
+    throw new Error(`OpenAI error: ${r.status} ${t}`);
+  }
 
-  const copyBlock =
-    `Short-tail:\n` +
-    results.filter(r => r.type === "short_tail").map((r, i) => `${i + 1}) ${r.keyword}`).join("\n") +
-    `\n\nLong-tail:\n` +
-    results.filter(r => r.type === "long_tail").map((r, i) => `${i + 1}) ${r.keyword}`).join("\n");
+  const data = await r.json() as any;
+  const content = data?.choices?.[0]?.message?.content || "{}";
 
-  return { results, best, copyBlock };
+  try {
+    return JSON.parse(content);
+  } catch {
+    const m = content.match(/\{[\s\S]*\}/);
+    if (!m) throw new Error("Failed to parse JSON from model output.");
+    return JSON.parse(m[0]);
+  }
 }
 
 export default {
-  async fetch(request: Request): Promise<Response> {
-    const url = new URL(request.url);
+  async fetch(req: Request, env: Env): Promise<Response> {
+    if (req.method === "OPTIONS") return json({ ok: true });
 
-    // ✅ CORS preflight
-    if (request.method === "OPTIONS") {
-      return json({ ok: true }, 200);
+    const url = new URL(req.url);
+
+    // ✅ accept both business and business_type just in case
+    const keyword = clean(url.searchParams.get("keyword") || "");
+    const business = clean(url.searchParams.get("business") || url.searchParams.get("business_type") || "");
+    const goal = clean(url.searchParams.get("goal") || "");
+
+    if (!keyword || !business || !goal) {
+      return json({ status: "error", message: "Missing required inputs: keyword, business, goal" }, 400);
     }
 
-    // ✅ Tool endpoint
-    if (url.pathname.includes("/keyword-analyzer")) {
-      const keyword = clean(url.searchParams.get("keyword") || "");
-      const goal = clean(url.searchParams.get("goal") || "");
-      const business = clean(url.searchParams.get("business") || "");
+    try {
+      const ai = await callOpenAI(env, keyword, business, goal);
 
-      if (!keyword || !goal || !business) {
-        return json(
-          { status: "error", message: "Missing required inputs: keyword, business, goal" },
-          400
-        );
-      }
+      // Basic safety cleanup
+      const results = Array.isArray(ai.results) ? ai.results : [];
+      const cleaned = results.slice(0, 5).map((r: any) => ({
+        keyword: clean(r.keyword || "", 160),
+        type: (r.type === "long_tail" ? "long_tail" : "short_tail"),
+        intent_type: r.intent_type || "Commercial",
+        funnel_stage: r.funnel_stage || "MOFU",
+        volume_level: r.volume_level || "Medium",
+        competition_level: r.competition_level || "Medium",
+        reason: clean(r.reason || "Use in a tightly themed ad group and align landing page copy.", 220)
+      }));
 
-      const { results, best, copyBlock } = buildKeywords(keyword, business, goal);
+      const best_pick = clean(ai.best_pick || cleaned?.[0]?.keyword || "", 160);
 
-      // ✅ UI-compatible response
+      const copy_block =
+        ai.copy_block ||
+        ("Short-tail:\n" +
+          cleaned.filter((x: any) => x.type === "short_tail").map((x: any, i: number) => `${i + 1}) ${x.keyword}`).join("\n") +
+          "\n\nLong-tail:\n" +
+          cleaned.filter((x: any) => x.type === "long_tail").map((x: any, i: number) => `${i + 1}) ${x.keyword}`).join("\n"));
+
       return json({
         status: "success",
-        best_pick: best,
-        copy_block: copyBlock,
-        results
+        best_pick,
+        copy_block,
+        results: cleaned
       });
+    } catch (e: any) {
+      return json({ status: "error", message: e?.message || "Unknown error" }, 500);
     }
-
-    return new Response("AdsNord Hub is Ready. Use /keyword-analyzer", {
-      headers: { "Content-Type": "text/plain; charset=utf-8" }
-    });
   }
 };
